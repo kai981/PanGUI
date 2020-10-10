@@ -19,7 +19,7 @@ Ui_MainWindow, QMainWindow = loadUiType(guifile)
 
 class Main(QMainWindow, Ui_MainWindow):
     def __init__(self, plotobjs, rows=None, cols=None, indexer=None,
-                 linkxaxes=None, linkyaxes=None, **kwargs):
+                 linkxaxes=None, linkyaxes=None):
         """
 
         :type plotobject: object
@@ -36,14 +36,6 @@ class Main(QMainWindow, Ui_MainWindow):
         else:
             self.plotobjs = [plotobjs]
         self.plotopts = [plotobj.plot(getPlotOpts=True) for plotobj in self.plotobjs]
-        for plotopts in self.plotopts:
-            for (k, v) in kwargs.items():
-                if k in plotopts.keys():
-                    if isinstance(plotopts[k], DPT.objects.ExclusiveOptions):
-                        plotopts[k].select(v)
-                    else:
-                        plotopts[k] = v
-
         self.currentIndex.setText(str(self.index))
         fig1 = Figure()
         fig1.set_facecolor((0.92, 0.92, 0.92))
@@ -51,19 +43,25 @@ class Main(QMainWindow, Ui_MainWindow):
         if cols is None:
             cols = 1
         if rows is None:
-            rows = int(np.ceil(len(self.plotobjs)/cols))
+            rows = np.ceil(len(self.plotobjs)/cols)
 
         if linkxaxes is None:
             linkxaxes = range(len(self.plotobjs))
         if linkyaxes is None:
             linkyaxes = range(len(self.plotobjs))
 
-        self.linkxaxes = linkxaxes
-        self.linkyaxes = linkyaxes
-        self.numEvents = 100000
+        self.numEvents = 100_000
         for (i, plotobj) in enumerate(self.plotobjs):
-            ax = fig1.add_subplot(rows, cols, i+1)
-        
+            if linkxaxes[i] < i:
+                sharex = fig1.axes[linkxaxes[i]]
+            else:
+                sharex = None
+            if linkyaxes[i] < i:
+                sharey = fig1.axes[linkxaxes[i]]
+            else:
+                sharey = None
+            ax = fig1.add_subplot(rows, cols, i+1, sharex=sharex,
+                                  sharey=sharey)
             nn, newIdx = plotobj.plot(self.index, getNumEvents=True)
             self.numEvents = min(self.numEvents, nn)
             plotobj.plot(self.index, ax=ax, **self.plotopts[i])
@@ -71,29 +69,8 @@ class Main(QMainWindow, Ui_MainWindow):
                 self.currentIndex.setText(str(newIdx))
                 self.updateIndex()
 
-        # set up axes sharing
-        for (i, plotobj) in enumerate(self.plotobjs):
-            ax = fig1.axes[i]
-            if linkxaxes[i] != i:
-                sharex = fig1.axes[linkxaxes[i]]
-            else:
-                sharex = None
-            if linkyaxes[i] != i:
-                sharey = fig1.axes[linkyaxes[i]]
-            else:
-                sharey = None
-
-            # explicitly update the x- and y-axis limits
-            if sharex is not None:
-                ax.set_xlim(sharex.get_xlim())
-                ax.sharex(sharex)
-            if sharey is not None:
-                ax.set_ylim(sharey.get_ylim())
-                ax.sharey(sharey)
-
         self.active_plotobj = None
         self.active_axis = None
-        self.active_obj_idx = 0
 
     def addmpl(self, fig):
         self.fig = fig
@@ -117,7 +94,7 @@ class Main(QMainWindow, Ui_MainWindow):
                 axidx = self.fig.axes.index(event.inaxes)
                 if axidx < len(self.plotobjs):
                     plotobj = self.plotobjs[axidx]
-                    self.active_obj_idx  = axidx
+                    plotopts = self.plotopts[axidx]
                 else:
                     # e.g. ax is the result of twinx
                     # attempt to use axis position to figure out the index
@@ -126,11 +103,12 @@ class Main(QMainWindow, Ui_MainWindow):
                         pos1 = _ax.get_position()
                         if np.allclose(pos0, pos1):
                             plotobj = self.plotobjs[ii]
-                            self.active_obj_idx = ii
+                            plotopts = self.plotopts[ii]
                             break
 
+
                 self.active_plotobj = plotobj
-                plotopts = self.plotopts[self.active_obj_idx]
+
                 popupMenu = QtWidgets.QMenu(self)
                 self.create_menu(plotopts, popupMenu)
                 self.active_axis = event.inaxes
@@ -198,28 +176,22 @@ class Main(QMainWindow, Ui_MainWindow):
         if q.text() == "Set all...":
             return None
         if self.active_plotobj is not None:
-            # TODO: Do we really need to do this?
-
-            idx = self.active_obj_idx
+            idx = self.plotobjs.index(self.active_plotobj)
 
             plotopts = self.plotopts[idx]
 
             # unwind path
             qpath = q.data()["path"]
             _opts = plotopts
-            _popts = self.preOpts[idx]
             if qpath:
                 cpath = qpath.split("_")
                 for k in cpath:
                     _opts = _opts[k]
-                    _popts = _popts[k]
 
             if isinstance(_opts, DPT.objects.ExclusiveOptions):
                 if q.isChecked():
-                    _popts.select(_opts.selected)
                     _opts.select(q.text())
             elif q.isCheckable():
-                _popts[q.text()] = _opts[q.text()]
                 _opts[q.text()] = q.isChecked()
             elif not q.isCheckable() and q.menu() is None:  # Text input
                 text, okPressed = QtWidgets.QInputDialog.getText(self,q.text(),"",
@@ -227,7 +199,6 @@ class Main(QMainWindow, Ui_MainWindow):
                                                                  str(q.data()["value"]))
                 if okPressed:
                     # unwind the path
-                    _popts[q.text()] = _opts[q.text()]
                     _opts[q.text()] = type(q.data()["value"])(text)
 
             if replotAll:
@@ -364,25 +335,6 @@ class Main(QMainWindow, Ui_MainWindow):
             _ax.clear()
         for (i, plotobj) in enumerate(self.plotobjs):
             plotobj.plot(self.index, ax=self.fig.axes[i], **self.plotopts[i])
-
-        for (i, plotobj) in enumerate(self.plotobjs):
-            # explicitly set the limits based on shared
-            ax = self.fig.axes[i]
-            if self.linkxaxes[i] != i:
-                # since x/y-lims appears to be fixed by sharex/sharey
-                # here we epxlicitly set them based on datalimits of
-                # the axes that this axis is linked to
-                sharex = self.fig.axes[self.linkxaxes[i]]
-                x_trf = ax.xaxis.get_transform()
-                dl = sharex.dataLim
-                x0, x1 = x_trf.transform(dl.intervalx)
-                xr = x1-x0
-                x0 -= 0.05*xr
-                x1 += 0.05*xr
-                ax.set_xlim(x0, x1)
-            if self.linkyaxes[i] != i:
-                sharey = self.fig.axes[self.linkyaxes[i]]
-                ax.set_ylim(sharey.dataLim.y0, sharey.dataLim.y1)
 
         self.canvas.draw()
         self.repaint()
